@@ -339,7 +339,7 @@ public final class HarnessConfigBuilder {
      */
     private static List<Object> resolveRails(HarnessConfig.ResourcesSchema resources, Path workspaceRoot) {
         if (resources == null || resources.getRails().isEmpty()) {
-            return List.of();
+            return new ArrayList<>();
         }
         List<Object> rails = new ArrayList<>();
         for (HarnessConfig.RailResourceSchema spec : resources.getRails()) {

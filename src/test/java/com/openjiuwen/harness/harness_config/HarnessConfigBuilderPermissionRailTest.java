@@ -56,6 +56,30 @@ class HarnessConfigBuilderPermissionRailTest {
             assertThat(rails).anyMatch(rail -> rail instanceof PermissionInterruptRail);
             assertThat(rails).anyMatch(rail -> rail instanceof SecurityRail);
         }
+
+        @Test
+        void build_permissionsEnabledNoRails_addsPermissionInterruptRail(@TempDir Path tempDir)
+                throws Exception {
+            Path configPath = tempDir.resolve("perm-enabled-no-rails.yaml");
+            Files.writeString(configPath, """
+                    schema_version: harness_config.v0.1
+                    id: perm-agent-no-rails
+                    name: Perm Agent No Rails
+                    workspace:
+                      root_path: workspace
+                    permissions:
+                      enabled: true
+                      schema: tiered_policy
+                      tools:
+                        read_file: ask
+                      defaults:
+                        "*": allow
+                    """);
+            DeepAgent agent = HarnessConfigBuilder.build(HarnessConfigLoader.load(configPath));
+            List<Object> rails = agent.getConfig().getRails();
+
+            assertThat(rails).anyMatch(rail -> rail instanceof PermissionInterruptRail);
+        }
     }
 
     @Nested
