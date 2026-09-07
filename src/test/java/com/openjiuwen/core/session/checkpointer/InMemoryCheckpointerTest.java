@@ -144,6 +144,8 @@ class InMemoryCheckpointerTest {
         now.set(1_000_000L + 60_001L);
         AgentSession second = new AgentSession("session-2", new Config(), checkpointer);
         checkpointer.preAgentExecute(second, null);
+        // Eviction is lazy in the Guava cache; tests run maintenance explicitly.
+        checkpointer.cleanUpRegistry();
 
         assertFalse(checkpointer.sessionExists("session-1"),
                 "expired session should be evicted by the TTL policy");
@@ -166,6 +168,8 @@ class InMemoryCheckpointerTest {
         now.set(1_000_000L + 1L);
         AgentSession third = new AgentSession("session-3", new Config(), checkpointer);
         checkpointer.preAgentExecute(third, null);
+        // Eviction is lazy in the Guava cache; tests run maintenance explicitly.
+        checkpointer.cleanUpRegistry();
 
         assertFalse(checkpointer.sessionExists("session-1"),
                 "least recently written session should be evicted when capacity is exceeded");
@@ -190,6 +194,9 @@ class InMemoryCheckpointerTest {
 
         AgentSession probe = new AgentSession("session-2", new Config(), checkpointer);
         checkpointer.preAgentExecute(probe, null);
+        // Explicit maintenance proves session-1 survives on its own refreshed TTL,
+        // not merely because lazy eviction has not run yet.
+        checkpointer.cleanUpRegistry();
 
         assertTrue(checkpointer.sessionExists("session-1"),
                 "a session written within the TTL window must survive");
@@ -210,6 +217,8 @@ class InMemoryCheckpointerTest {
         now.set(1_000_000L + 60_001L);
         WorkflowSession other = new WorkflowSession("workflow-2", null, "session-2", InMemoryState.create(), null);
         checkpointer.preWorkflowExecute(other, null);
+        // Eviction is lazy in the Guava cache; tests run maintenance explicitly.
+        checkpointer.cleanUpRegistry();
 
         assertFalse(checkpointer.graphStore().get("session-1", "workflow-1").isPresent(),
                 "graph store entries must be removed together with the evicted session");
@@ -232,6 +241,8 @@ class InMemoryCheckpointerTest {
         now.set(1_000_000L + 1L);
         AgentSession third = new AgentSession("session-3", new Config(), checkpointer);
         checkpointer.preAgentExecute(third, null);
+        // Eviction is lazy in the Guava cache; tests run maintenance explicitly.
+        checkpointer.cleanUpRegistry();
 
         assertTrue(checkpointer.sessionExists("session-2"),
                 "released session must free its capacity slot");

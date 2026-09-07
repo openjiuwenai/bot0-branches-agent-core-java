@@ -4,6 +4,12 @@
 
 package com.openjiuwen.core.session.checkpointer;
 
+import com.google.common.base.Ticker;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.RemovalCause;
+import com.google.common.cache.RemovalNotification;
+
 import com.openjiuwen.core.common.constants.Constant;
 import com.openjiuwen.core.common.exception.ErrorHelper;
 import com.openjiuwen.core.common.exception.StatusCode;
@@ -23,12 +29,11 @@ import com.openjiuwen.core.session.state.WorkflowCommitState;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 
 /**
@@ -36,15 +41,17 @@ import java.util.function.LongSupplier;
  * <p>
  * Checkpoints are kept per session so an interrupted execution can resume later.
  * To keep memory bounded in long-running processes, sessions are evicted with a
- * combined TTL + capacity policy: entries not written within the TTL (default
- * 7 days, aligned with the Redis checkpointer's {@code default_ttl}) are removed,
- * and when the number of tracked sessions exceeds the capacity limit (default
- * 100) the least recently written sessions are evicted first.
+ * combined TTL + capacity policy backed by a Guava {@link Cache}: entries not
+ * written within the TTL (default 7 days, aligned with the Redis checkpointer's
+ * {@code default_ttl}) are expired, and when the number of tracked sessions
+ * exceeds the capacity limit (default 100) the least recently written sessions
+ * are evicted first.
  * <p>
- * Eviction is lazy: the TTL sweep and capacity check run whenever any session
- * writes a checkpoint, not on a background timer. A fully idle process therefore
- * keeps at most {@code maxSessions} sessions resident — the capacity limit is
- * the hard memory bound, the TTL only reclaims stale entries once traffic resumes.
+ * Eviction is lazy: Guava expires entries during cache maintenance that runs
+ * on read and write activity, not on a background timer. A fully idle process
+ * therefore keeps at most {@code maxSessions} sessions resident — the capacity
+ * limit is the hard memory bound, the TTL only reclaims stale entries once
+ * traffic resumes.
  * <p>
  * Mirrors Python's {@code openjiuwen.core.session.checkpointer.inmemory.InMemoryCheckpointer}.
  *
@@ -70,15 +77,17 @@ public class InMemoryCheckpointer extends Checkpointer {
 
     private final int maxSessions;
 
-    /** Clock source, overridable for tests. */
+    /** Clock source in milliseconds, overridable for tests. */
     private final LongSupplier clock;
 
     /**
-     * Insertion-ordered session registry. Access order == write order (a read
-     * does not refresh the TTL, matching the Redis checkpointer's
-     * {@code refresh_on_read=false}). Guarded by itself.
+     * Tracked session registry. Write-recency ordering and the TTL + capacity
+     * eviction policy are delegated to the Guava cache: {@code expireAfterWrite}
+     * implements the TTL (a read does not refresh it, matching the Redis
+     * checkpointer's {@code refresh_on_read=false}) and {@code maximumSize}
+     * evicts least-recently-written sessions first.
      */
-    private final LinkedHashMap<String, Long> sessionRegistry = new LinkedHashMap<>(16, 0.75f, false);
+    private final Cache<String, Boolean> sessionRegistry;
 
     public InMemoryCheckpointer() {
         this(DEFAULT_TTL_MILLIS, DEFAULT_MAX_SESSIONS, System::currentTimeMillis);
@@ -96,6 +105,29 @@ public class InMemoryCheckpointer extends Checkpointer {
         this.ttlMillis = ttlMillis;
         this.maxSessions = maxSessions;
         this.clock = clock != null ? clock : System::currentTimeMillis;
+        CacheBuilder<Object, Object> builder = CacheBuilder.newBuilder();
+        if (ttlMillis > 0) {
+            builder.expireAfterWrite(ttlMillis, TimeUnit.MILLISECONDS);
+        }
+        if (maxSessions > 0) {
+            builder.maximumSize(maxSessions);
+        }
+        this.sessionRegistry = builder
+                .ticker(new Ticker() {
+                    @Override
+                    public long read() {
+                        return TimeUnit.MILLISECONDS.toNanos(clock.getAsLong());
+                    }
+                })
+                .removalListener((RemovalNotification<String, Boolean> notification) -> {
+                    // EXPLICIT: release() invalidates the session and performs its own cleanup;
+                    // REPLACED: a write to an already-tracked session refreshes its entry.
+                    if (notification.getCause() != RemovalCause.EXPLICIT
+                            && notification.getCause() != RemovalCause.REPLACED) {
+                        evictSession(notification.getKey());
+                    }
+                })
+                .build();
     }
 
     String tenantAwareSessionId(String sessionId) {
@@ -278,53 +310,39 @@ public class InMemoryCheckpointer extends Checkpointer {
     }
 
     /**
-     * Record a write for the session and apply the TTL + capacity eviction policy.
-     * A read does not refresh the TTL (matches the Redis checkpointer's
+     * Record a write for the session. Expiration and capacity eviction are
+     * applied lazily by the Guava cache during its own maintenance: a read
+     * does not refresh the TTL (matches the Redis checkpointer's
      * {@code refresh_on_read=false}); only writes keep a session alive.
+     * Evicted sessions are cleaned up via the cache removal listener; writes
+     * to an already-tracked session replace the entry
+     * ({@link RemovalCause#REPLACED}) and never trigger cleanup.
      *
      * @param tid tenant-aware session id of the session being written
      */
     private void touchSession(String tid) {
-        long now = clock.getAsLong();
-        List<String> evicted = new ArrayList<>();
-        synchronized (sessionRegistry) {
-            sessionRegistry.remove(tid);
-            sessionRegistry.put(tid, now);
-            if (ttlMillis > 0) {
-                Iterator<Map.Entry<String, Long>> it = sessionRegistry.entrySet().iterator();
-                while (it.hasNext()) {
-                    Map.Entry<String, Long> entry = it.next();
-                    if (now - entry.getValue() >= ttlMillis) {
-                        it.remove();
-                        evicted.add(entry.getKey());
-                    }
-                }
-            }
-            if (maxSessions > 0) {
-                // The iterator starts at the least recently written entry, so this
-                // evicts eldest sessions one by one until within the capacity limit
-                // (in practice exactly one, since each touch adds at most one entry).
-                Iterator<Map.Entry<String, Long>> it = sessionRegistry.entrySet().iterator();
-                while (sessionRegistry.size() > maxSessions && it.hasNext()) {
-                    evicted.add(it.next().getKey());
-                    it.remove();
-                }
-            }
-        }
-        for (String evictedTid : evicted) {
-            evictSession(evictedTid);
-        }
+        sessionRegistry.put(tid, Boolean.TRUE);
     }
 
     /**
-     * Stop tracking a session without touching its checkpoints.
+     * Run pending cache maintenance immediately: expire TTL-elapsed entries,
+     * evict sessions beyond the capacity limit, and synchronously dispatch
+     * their removal notifications. Guava normally applies this lazily during
+     * cache activity; tests call it to make eviction deterministic.
+     */
+    void cleanUpRegistry() {
+        sessionRegistry.cleanUp();
+    }
+
+    /**
+     * Stop tracking a session without touching its checkpoints. The
+     * {@link RemovalCause#EXPLICIT} guard in the removal listener prevents the
+     * listener from re-running the eviction cleanup for this deliberate removal.
      *
      * @param tid tenant-aware session id to stop tracking
      */
     private void unregisterSession(String tid) {
-        synchronized (sessionRegistry) {
-            sessionRegistry.remove(tid);
-        }
+        sessionRegistry.invalidate(tid);
     }
 
     /**

@@ -199,6 +199,12 @@
             <groupId>com.fasterxml.jackson.datatype</groupId>
             <artifactId>jackson-datatype-jsr310</artifactId>
         </dependency>
+        <!-- Eviction cache for InMemoryCheckpointer; version pinned in dependencyManagement.
+             Also transitively provided by milvus-sdk-java at the same version, so this adds no size. -->
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+        </dependency>
         <!-- HTTP Client: OkHttp -->
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>
