@@ -1,4 +1,4 @@
-# com.openjiuwen.core.retrieval.vector_store.ChromaVectorStore
+# com.openjiuwen.retrieval.vector_store.ChromaVectorStore
 
 ## 类 ChromaVectorStore
 

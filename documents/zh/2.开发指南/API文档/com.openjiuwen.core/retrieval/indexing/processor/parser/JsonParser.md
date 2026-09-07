@@ -1,4 +1,4 @@
-# com.openjiuwen.core.retrieval.indexing.processor.parser.JsonParser
+# com.openjiuwen.retrieval.indexing.processor.parser.JsonParser
 
 ## 类 JsonParser
 

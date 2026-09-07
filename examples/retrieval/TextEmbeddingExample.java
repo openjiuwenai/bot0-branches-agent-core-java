@@ -4,7 +4,7 @@
 
 package examples.retrieval;
 
-import com.openjiuwen.core.retrieval.embedding.VLLMEmbedding;
+import com.openjiuwen.retrieval.embedding.VLLMEmbedding;
 
 import java.util.List;
 

@@ -5,7 +5,7 @@
 package examples.retrieval;
 
 import com.openjiuwen.core.retrieval.common.SearchResult;
-import com.openjiuwen.core.retrieval.vector_store.ChromaVectorStore;
+import com.openjiuwen.retrieval.vector_store.ChromaVectorStore;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;

@@ -1,4 +1,4 @@
-# com.openjiuwen.core.retrieval.embedding.EmbeddingUtils
+# com.openjiuwen.retrieval.embedding.EmbeddingUtils
 
 ## 类 EmbeddingUtils
 

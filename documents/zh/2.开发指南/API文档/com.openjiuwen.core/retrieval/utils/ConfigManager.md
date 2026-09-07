@@ -1,4 +1,4 @@
-# com.openjiuwen.core.retrieval.utils.ConfigManager
+# com.openjiuwen.retrieval.utils.ConfigManager
 
 ## 类 ConfigManager
 

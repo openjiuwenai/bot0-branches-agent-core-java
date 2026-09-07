@@ -1,4 +1,4 @@
-# com.openjiuwen.core.retrieval.vector_store.MilvusVectorStore
+# com.openjiuwen.retrieval.vector_store.MilvusVectorStore
 
 ## 类 MilvusVectorStore
 
