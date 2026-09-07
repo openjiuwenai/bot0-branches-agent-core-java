@@ -122,7 +122,7 @@ public class InMemoryCheckpointer extends Checkpointer {
         }
 
         sessionToWorkflowIds.computeIfAbsent(tid, k -> ConcurrentHashMap.newKeySet());
-        touchSession(tid, sessionId);
+        touchSession(tid);
 
         if (inputs != null) {
             Loggers.SESSION.info("Begin to restore workflow session, sessionId={}, workflowId={}", sessionId,
@@ -211,7 +211,7 @@ public class InMemoryCheckpointer extends Checkpointer {
         if (isNewStore) {
             Loggers.SESSION.info("Create new agent checkpointer store, sessionId={}", sessionId);
         }
-        touchSession(tid, sessionId);
+        touchSession(tid);
 
         Loggers.SESSION.info("Begin to restore agent session, sessionId={}", sessionId);
         agentStore.recover(session);
@@ -234,7 +234,7 @@ public class InMemoryCheckpointer extends Checkpointer {
                     "agent store not found");
         }
 
-        touchSession(tid, sessionId);
+        touchSession(tid);
         Loggers.SESSION.info("Save agent checkpoint on interruption, sessionId={}", sessionId);
         agentStore.save(session);
         Loggers.SESSION.info("Succeed to save agent checkpoint on interruption, sessionId={}", sessionId);
@@ -250,7 +250,7 @@ public class InMemoryCheckpointer extends Checkpointer {
                     "agent store not found");
         }
 
-        touchSession(tid, sessionId);
+        touchSession(tid);
         Loggers.SESSION.info("Save agent checkpoint on completion, sessionId={}", sessionId);
         agentStore.save(session);
         Loggers.SESSION.info("Succeed to save agent checkpoint on completion, sessionId={}", sessionId);
@@ -281,8 +281,10 @@ public class InMemoryCheckpointer extends Checkpointer {
      * Record a write for the session and apply the TTL + capacity eviction policy.
      * A read does not refresh the TTL (matches the Redis checkpointer's
      * {@code refresh_on_read=false}); only writes keep a session alive.
+     *
+     * @param tid tenant-aware session id of the session being written
      */
-    private void touchSession(String tid, String sessionId) {
+    private void touchSession(String tid) {
         long now = clock.getAsLong();
         List<String> evicted = new ArrayList<>();
         synchronized (sessionRegistry) {
@@ -314,14 +316,22 @@ public class InMemoryCheckpointer extends Checkpointer {
         }
     }
 
-    /** Stop tracking a session without touching its checkpoints (used by {@link #release}). */
+    /**
+     * Stop tracking a session without touching its checkpoints.
+     *
+     * @param tid tenant-aware session id to stop tracking
+     */
     private void unregisterSession(String tid) {
         synchronized (sessionRegistry) {
             sessionRegistry.remove(tid);
         }
     }
 
-    /** Remove all checkpoint state for a session evicted by the TTL or capacity policy. */
+    /**
+     * Remove all checkpoint state for a session evicted by the TTL or capacity policy.
+     *
+     * @param tid tenant-aware session id of the evicted session
+     */
     private void evictSession(String tid) {
         sessionToWorkflowIds.remove(tid);
         // tid may carry a tenant prefix ("tenantId:sessionId"); the graph store is keyed
@@ -333,7 +343,12 @@ public class InMemoryCheckpointer extends Checkpointer {
                 ttlMillis, maxSessions);
     }
 
-    /** Extract the raw sessionId from a tenant-prefixed tid ("tenantId:sessionId"). */
+    /**
+     * Extract the raw sessionId from a tenant-prefixed tid.
+     *
+     * @param tid tenant-aware session id, possibly in the form "tenantId:sessionId"
+     * @return the sessionId without the tenant prefix, or null if tid is null
+     */
     private static String stripTenantPrefix(String tid) {
         if (tid == null) {
             return null;
@@ -349,7 +364,7 @@ public class InMemoryCheckpointer extends Checkpointer {
 
     private void saveWorkflowCheckpoint(String workflowId, String sessionId, BaseSession session, String reason) {
         String tid = tenantAwareSessionId(sessionId);
-        touchSession(tid, sessionId);
+        touchSession(tid);
         InMemoryWorkflowStorage workflowStore = workflowStores.get(tid);
         Set<String> workflowIds = sessionToWorkflowIds.get(tid);
         Loggers.SESSION.info("Save workflow checkpoint on {}, sessionId={}, workflowId={}", reason, sessionId,
