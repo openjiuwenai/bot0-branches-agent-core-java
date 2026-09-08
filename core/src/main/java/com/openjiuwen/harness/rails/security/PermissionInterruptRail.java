@@ -5,16 +5,11 @@
 package com.openjiuwen.harness.rails.security;
 
 import com.openjiuwen.core.foundation.llm.schema.ToolCall;
-import com.openjiuwen.core.foundation.llm.schema.ToolMessage;
 import com.openjiuwen.core.singleagent.interrupt.InterruptRequest;
-import com.openjiuwen.core.singleagent.interrupt.ToolInterruptException;
 import com.openjiuwen.core.singleagent.rail.AgentCallbackContext;
 import com.openjiuwen.core.singleagent.rail.ToolCallInputs;
-import com.openjiuwen.harness.rails.interrupt.ApproveResult;
 import com.openjiuwen.harness.rails.interrupt.BaseInterruptRail;
 import com.openjiuwen.harness.rails.interrupt.InterruptDecision;
-import com.openjiuwen.harness.rails.interrupt.InterruptResult;
-import com.openjiuwen.harness.rails.interrupt.RejectResult;
 import com.openjiuwen.harness.security.PermissionCheckResult;
 import com.openjiuwen.harness.security.PermissionConfirmResponse;
 import com.openjiuwen.harness.security.PermissionConfirmationRequest;
@@ -96,15 +91,10 @@ public class PermissionInterruptRail extends BaseInterruptRail {
      */
     @Override
     public void beforeToolCall(AgentCallbackContext ctx) {
-        if (!(ctx.getInputs() instanceof ToolCallInputs)) {
+        if (!(ctx.getInputs() instanceof ToolCallInputs inputs)) {
             return;
         }
-        ToolCallInputs inputs = (ToolCallInputs) ctx.getInputs();
-        ToolCall toolCall = inputs.getToolCall();
-        String toolCallId = toolCall != null ? toolCall.getId() : "";
-        Object userInput = getUserInput(ctx, toolCallId);
-        InterruptDecision decision = resolveInterrupt(ctx, toolCall, userInput);
-        applyResolvedDecision(ctx, toolCall, decision);
+        evaluateWithSettledReplay(ctx, inputs);
     }
 
     /**
@@ -374,34 +364,5 @@ public class PermissionInterruptRail extends BaseInterruptRail {
         }
         String preview = sb.toString();
         return preview.length() > 1000 ? preview.substring(0, 1000) : preview;
-    }
-
-    private void applyResolvedDecision(AgentCallbackContext ctx, ToolCall toolCall, InterruptDecision decision) {
-        if (!(ctx.getInputs() instanceof ToolCallInputs inputs)) {
-            return;
-        }
-        if (decision instanceof ApproveResult approveResult) {
-            if (approveResult.getNewArgs() != null) {
-                inputs.setToolArgs(approveResult.getNewArgs());
-            }
-            return;
-        }
-        if (decision instanceof RejectResult rejectResult) {
-            ctx.getExtra().put("_skip_tool", Boolean.TRUE);
-            inputs.setToolResult(rejectResult.getToolResult());
-            ToolMessage toolMessage = rejectResult.getToolMessage();
-            if (toolMessage == null) {
-                String toolCallId = toolCall != null ? toolCall.getId() : "";
-                toolMessage = ToolMessage.builder()
-                        .content(String.valueOf(rejectResult.getToolResult()))
-                        .toolCallId(toolCallId)
-                        .build();
-            }
-            inputs.setToolMsg(toolMessage);
-            return;
-        }
-        if (decision instanceof InterruptResult interruptResult) {
-            throw new ToolInterruptException(interruptResult.getRequest(), toolCall);
-        }
     }
 }

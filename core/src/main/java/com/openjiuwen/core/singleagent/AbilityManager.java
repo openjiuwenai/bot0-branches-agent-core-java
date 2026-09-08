@@ -27,7 +27,9 @@ import com.openjiuwen.core.session.Session;
 import com.openjiuwen.core.session.SessionContextHolder;
 import com.openjiuwen.core.session.stream.OutputSchema;
 import com.openjiuwen.core.singleagent.agents.ReActAgentConfig;
+import com.openjiuwen.core.singleagent.interrupt.RailSettledDecision;
 import com.openjiuwen.core.singleagent.interrupt.ToolInterruptException;
+import com.openjiuwen.core.singleagent.interrupt.ToolInterruptionState;
 import com.openjiuwen.core.singleagent.rail.AgentCallbackContext;
 import com.openjiuwen.core.singleagent.rail.AgentCallbackEvent;
 import com.openjiuwen.core.singleagent.rail.RailExecutor;
@@ -540,7 +542,42 @@ public class AbilityManager implements ToolRegistry {
 
     private static void mergeToolContext(AgentCallbackContext parentCtx, AgentCallbackContext toolCtx) {
         mergeToolExtra(parentCtx, toolCtx);
+        mergeSettledDecisions(parentCtx, toolCtx);
         propagateForceFinish(parentCtx, toolCtx);
+    }
+
+    /**
+     * mergeSettledDecisions.
+     * 
+     * @param parentCtx parentCtx
+     * @param toolCtx toolCtx
+     * @since 0.1.16
+     */
+    @SuppressWarnings("unchecked")
+    private static void mergeSettledDecisions(AgentCallbackContext parentCtx, AgentCallbackContext toolCtx) {
+        if (parentCtx == null || parentCtx.getExtra() == null || toolCtx == null || toolCtx.getExtra() == null) {
+            return;
+        }
+        Object child = toolCtx.getExtra().get(ToolInterruptionState.RAIL_SETTLED_DECISIONS_KEY);
+        if (!(child instanceof Map<?, ?> childByToolCallId) || childByToolCallId.isEmpty()) {
+            return;
+        }
+        Object parent = parentCtx.getExtra().get(ToolInterruptionState.RAIL_SETTLED_DECISIONS_KEY);
+        Map<String, Map<String, RailSettledDecision>> parentByToolCallId;
+        if (parent instanceof Map<?, ?> existing) {
+            parentByToolCallId = (Map<String, Map<String, RailSettledDecision>>) existing;
+        } else {
+            parentByToolCallId = new ConcurrentHashMap<>();
+            parentCtx.getExtra().put(ToolInterruptionState.RAIL_SETTLED_DECISIONS_KEY, parentByToolCallId);
+        }
+        for (Map.Entry<?, ?> entry : childByToolCallId.entrySet()) {
+            if (!(entry.getKey() instanceof String toolCallId)
+                    || !(entry.getValue() instanceof Map<?, ?> childByRailId)) {
+                continue;
+            }
+            parentByToolCallId.computeIfAbsent(toolCallId, ignored -> new ConcurrentHashMap<>())
+                    .putAll((Map<String, RailSettledDecision>) childByRailId);
+        }
     }
 
     private static void propagateForceFinish(AgentCallbackContext parentCtx, AgentCallbackContext toolCtx) {
