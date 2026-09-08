@@ -4,8 +4,8 @@
 
 package examples.retrieval;
 
-import com.openjiuwen.core.retrieval.common.MultimodalDocument;
-import com.openjiuwen.core.retrieval.embedding.VLLMEmbedding;
+import com.openjiuwen.retrieval.common.MultimodalDocument;
+import com.openjiuwen.retrieval.embedding.VLLMEmbedding;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;

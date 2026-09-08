@@ -6,7 +6,7 @@ package examples.skill_create;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openjiuwen.core.retrieval.common.Document;
-import com.openjiuwen.core.retrieval.indexing.processor.parser.PDFParser;
+import com.openjiuwen.retrieval.indexing.processor.parser.PDFParser;
 import com.openjiuwen.core.runner.Runner;
 import com.openjiuwen.dev_tools.skill_creator.SkillCreator;
 import examples.utils.SharedExampleApiConfigLoader;

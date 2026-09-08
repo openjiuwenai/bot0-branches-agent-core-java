@@ -1,4 +1,4 @@
-# com.openjiuwen.core.foundation.store.vector.ChromaVectorStore
+# com.openjiuwen.retrieval.vector_store.adapter.ChromaVectorStore
 
 ## class ChromaVectorStore
 

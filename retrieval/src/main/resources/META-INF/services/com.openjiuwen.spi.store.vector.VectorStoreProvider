@@ -1,0 +1,4 @@
+com.openjiuwen.retrieval.vector_store.provider.ChromaVectorStoreProvider
+com.openjiuwen.retrieval.vector_store.provider.MilvusVectorStoreProvider
+com.openjiuwen.retrieval.vector_store.provider.PGVectorStoreProvider
+com.openjiuwen.retrieval.vector_store.provider.ElasticsearchVectorStoreProvider
