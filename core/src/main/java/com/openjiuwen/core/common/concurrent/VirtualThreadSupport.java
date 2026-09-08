@@ -4,6 +4,8 @@
 
 package com.openjiuwen.core.common.concurrent;
 
+import com.openjiuwen.core.common.logging.Loggers;
+
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Objects;
@@ -79,7 +81,12 @@ final class VirtualThreadSupport {
     }
 
     private static Optional<VirtualThreadMethods> resolveVirtualThreadMethods() {
-        if (Runtime.version().feature() < MINIMUM_VIRTUAL_THREAD_VERSION) {
+        int featureVersion = Runtime.version().feature();
+        if (featureVersion < MINIMUM_VIRTUAL_THREAD_VERSION) {
+            // JDK 版本低于 21，虚拟线程不可用，走平台线程路径。
+            Loggers.COMMON.info("Virtual threads unavailable: java version={} < {}, "
+                            + "falling back to platform threads",
+                    featureVersion, MINIMUM_VIRTUAL_THREAD_VERSION);
             return Optional.empty();
         }
         try {
@@ -93,10 +100,17 @@ final class VirtualThreadSupport {
             Method unstarted = builderClass.getMethod("unstarted", Runnable.class);
             Method newThreadPerTaskExecutor = Executors.class.getMethod(
                     "newThreadPerTaskExecutor", ThreadFactory.class);
+            Loggers.COMMON.info("Virtual threads supported: java version={}, "
+                            + "reflection-based virtual thread factory resolved",
+                    featureVersion);
             return Optional.of(new VirtualThreadMethods(ofVirtual, name, nameSingle, uncaughtExceptionHandler,
                     factory, unstarted, newThreadPerTaskExecutor));
         } catch (NoSuchMethodException ignored) {
             // 当前运行时没有提供稳定的虚拟线程接口，统一执行器将继续使用平台线程。
+            Loggers.COMMON.warning("Virtual threads unavailable: java version={} >= {} but "
+                            + "virtual thread interfaces not found via reflection, "
+                            + "falling back to platform threads",
+                    featureVersion, MINIMUM_VIRTUAL_THREAD_VERSION);
             return Optional.empty();
         }
     }
