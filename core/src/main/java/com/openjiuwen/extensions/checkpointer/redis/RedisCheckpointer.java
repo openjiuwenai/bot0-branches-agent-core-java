@@ -4,9 +4,11 @@
 
 package com.openjiuwen.extensions.checkpointer.redis;
 
+import com.openjiuwen.core.common.concurrent.OpenJiuwenExecutors;
 import com.openjiuwen.core.common.constants.Constant;
 import com.openjiuwen.core.common.exception.ErrorHelper;
 import com.openjiuwen.core.common.exception.StatusCode;
+import com.openjiuwen.core.common.logging.Loggers;
 import com.openjiuwen.core.graph.pregel.PregelConstants;
 import com.openjiuwen.core.graph.store.GraphStoreState;
 import com.openjiuwen.core.graph.store.Store;
@@ -34,6 +36,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Redis-based checkpointer implementation.
@@ -46,6 +49,9 @@ import java.util.Set;
  * @since 0.1.7
  */
 public class RedisCheckpointer extends Checkpointer {
+    private static final long CHECKPOINT_JOIN_POLL_MS = 1_000L;
+    private static final long CHECKPOINT_JOIN_DEADLINE_MS = 5_000L;
+
     private final RedisStore redisStore;
     private final AgentStorage agentStorage;
     private final WorkflowStorage workflowStorage;
@@ -95,13 +101,63 @@ public class RedisCheckpointer extends Checkpointer {
 
     /**
      * Finalize agent execution by saving checkpoint state to Redis.
-     * 
+     * <p>
+     * On virtual-thread runtimes (JDK 21+), the Redis write runs on a dedicated
+     * background thread and the caller waits for it to finish. The consumer-side
+     * close hook interrupts the calling agent thread (stream cancel) right after
+     * the END_FRAME is emitted; the fresh thread keeps the socket I/O of the
+     * checkpoint write immune to that interrupt. On platform-thread runtimes
+     * (JDK 17) the save runs inline, matching the historical behavior.
+     *
      * @param session The session for the agent
      * @since 0.1.7
      */
     @Override
     public void postAgentExecute(BaseSession session) {
-        agentStorage.save(session).join();
+        if (!OpenJiuwenExecutors.isVirtualThreadSupported()) {
+            agentStorage.save(session).join();
+            return;
+        }
+        Thread writer = OpenJiuwenExecutors.newThread(
+                () -> agentStorage.save(session).join(),
+                "redis-checkpoint-" + session.sessionId(), true);
+        writer.start();
+        awaitCheckpointWriter(writer, session.sessionId());
+    }
+
+    /**
+     * Wait for the checkpoint writer thread, tolerating interrupts directed at
+     * the calling thread. A bounded poll keeps repeated interrupts from spinning;
+     * past the deadline the wait is abandoned (the writer keeps running in the
+     * background and still persists the state).
+     *
+     * @param writer checkpoint writer thread
+     * @param sessionId session id for diagnostics
+     */
+    private void awaitCheckpointWriter(Thread writer, String sessionId) {
+        long deadlineNanos = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(CHECKPOINT_JOIN_DEADLINE_MS);
+        boolean isInterruptedDuringWait = false;
+        while (writer.isAlive()) {
+            long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
+            if (remainingMs <= 0) {
+                Loggers.SESSION.error("redis checkpoint join exceeded {}ms, sessionId={}, "
+                                + "abandoning wait; writer continues in background",
+                        CHECKPOINT_JOIN_DEADLINE_MS, sessionId);
+                if (isInterruptedDuringWait) {
+                    Thread.currentThread().interrupt();
+                }
+                return;
+            }
+            try {
+                writer.join(Math.min(CHECKPOINT_JOIN_POLL_MS, remainingMs));
+            } catch (InterruptedException e) {
+                isInterruptedDuringWait = true;
+            }
+        }
+        if (isInterruptedDuringWait) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**
