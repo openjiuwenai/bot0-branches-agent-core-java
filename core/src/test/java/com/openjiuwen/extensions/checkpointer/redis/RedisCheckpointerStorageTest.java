@@ -165,6 +165,60 @@ class RedisCheckpointerStorageTest {
     }
 
     @Test
+    void interruptDuringPostAgentExecuteStillPersistsState() throws Exception {
+        FakeRedisClient redisClient = new FakeRedisClient();
+        RedisCheckpointer checkpointer =
+            new RedisCheckpointer(new com.openjiuwen.extensions.store.kv.RedisStore(redisClient),
+                    Map.of("default_ttl", 60));
+
+        Config config = new Config();
+        config.setAgentConfig(new Config.MetadataLike("agent-1", "agent", "invoke"));
+        AgentSession session = new AgentSession("interrupt-session", config, checkpointer);
+        checkpointer.preAgentExecute(session, null);
+        session.state().updateGlobal(Map.of("persisted", "value"));
+
+        Thread caller = new Thread(() -> checkpointer.postAgentExecute(session));
+        caller.start();
+        // 模拟消费端 EOF -> streamFuture.cancel(true)：等待期打断调用线程，
+        // checkpoint 写线程中断状态干净，落盘必须完整完成。
+        Thread.sleep(50L);
+        caller.interrupt();
+        caller.join(5_000L);
+        assertFalse(caller.isAlive(), "postAgentExecute should not hang on interrupt");
+
+        String dumpTypeKey = "interrupt-session:agent:agent-1:agent_state_blobs_dump_type";
+        String blobKey = "interrupt-session:agent:agent-1:agent_state_blobs";
+        assertTrue(redisClient.exists(dumpTypeKey) > 0L, "dump_type key must survive caller interrupt");
+        assertTrue(redisClient.exists(blobKey) > 0L, "blob key must survive caller interrupt");
+
+        AgentSession restored = new AgentSession("interrupt-session", config, checkpointer);
+        checkpointer.preAgentExecute(restored, null);
+        assertEquals("value", restored.state().getGlobal("persisted"));
+    }
+
+    @Test
+    void postAgentExecutePersistsStateBeforeReturning() {
+        FakeRedisClient redisClient = new FakeRedisClient();
+        RedisCheckpointer checkpointer =
+            new RedisCheckpointer(new com.openjiuwen.extensions.store.kv.RedisStore(redisClient),
+                    Map.of("default_ttl", 60));
+
+        Config config = new Config();
+        config.setAgentConfig(new Config.MetadataLike("agent-1", "agent", "invoke"));
+        AgentSession session = new AgentSession("sync-session", config, checkpointer);
+        checkpointer.preAgentExecute(session, null);
+        session.state().updateGlobal(Map.of("persisted", "value"));
+
+        checkpointer.postAgentExecute(session);
+
+        // 同步语义：方法返回即落盘完成，无需额外等待。
+        String dumpTypeKey = "sync-session:agent:agent-1:agent_state_blobs_dump_type";
+        String blobKey = "sync-session:agent:agent-1:agent_state_blobs";
+        assertTrue(redisClient.exists(dumpTypeKey) > 0L, "dump_type key must be visible right after return");
+        assertTrue(redisClient.exists(blobKey) > 0L, "blob key must be visible right after return");
+    }
+
+    @Test
     void preWorkflowExecuteWithoutInteractiveInputRejectsExistingStateWhenCleanupDisabled() {
         FakeRedisClient redisClient = new FakeRedisClient();
         RedisCheckpointer checkpointer =
