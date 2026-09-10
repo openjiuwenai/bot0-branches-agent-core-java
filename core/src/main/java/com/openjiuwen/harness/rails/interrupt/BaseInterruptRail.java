@@ -17,6 +17,7 @@ import com.openjiuwen.core.singleagent.rail.ToolCallInputs;
 
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -183,9 +184,9 @@ public abstract class BaseInterruptRail extends AgentRail {
         ToolCall toolCall = inputs.getToolCall();
         String toolCallId = toolCall != null ? toolCall.getId() : "";
 
-        RailSettledDecision settled = findSettledDecision(ctx, toolCallId);
-        if (settled != null) {
-            applyDecision(ctx, toolCall, toDecision(settled));
+        Optional<RailSettledDecision> settled = findSettledDecision(ctx, toolCallId);
+        if (settled.isPresent()) {
+            applyDecision(ctx, toolCall, toDecision(settled.get()));
             return;
         }
 
@@ -213,24 +214,25 @@ public abstract class BaseInterruptRail extends AgentRail {
      * 
      * @param ctx ctx
      * @param toolCallId toolCallId
-     * @return the persisted verdict, or null when this rail has not settled the tool call yet
+     * @return the persisted verdict, or empty when this rail has not settled the tool call yet
      * @since 0.1.16
      */
     @SuppressWarnings("unchecked")
-    private RailSettledDecision findSettledDecision(AgentCallbackContext ctx, String toolCallId) {
+    private Optional<RailSettledDecision> findSettledDecision(AgentCallbackContext ctx, String toolCallId) {
         if (ctx.getExtra() == null || toolCallId == null) {
-            return null;
+            return Optional.empty();
         }
         Object raw = ctx.getExtra().get(ToolInterruptionState.RAIL_SETTLED_DECISIONS_KEY);
         if (!(raw instanceof Map<?, ?> byToolCallId)) {
-            return null;
+            return Optional.empty();
         }
         Object perRail = byToolCallId.get(toolCallId);
         if (!(perRail instanceof Map<?, ?> byRailId)) {
-            return null;
+            return Optional.empty();
         }
-        Object settled = byRailId.get(railId());
-        return settled instanceof RailSettledDecision decision ? decision : null;
+        return Optional.ofNullable(byRailId.get(railId()))
+                .filter(RailSettledDecision.class::isInstance)
+                .map(RailSettledDecision.class::cast);
     }
 
     /**
@@ -245,45 +247,46 @@ public abstract class BaseInterruptRail extends AgentRail {
      */
     @SuppressWarnings("unchecked")
     private void recordSettledDecision(AgentCallbackContext ctx, String toolCallId, InterruptDecision decision) {
-        RailSettledDecision settled = toSettledDecision(railId(), decision);
-        if (settled == null || ctx.getExtra() == null) {
+        Optional<RailSettledDecision> settled = toSettledDecision(railId(), decision);
+        if (settled.isEmpty() || ctx.getExtra() == null) {
             return;
         }
+        RailSettledDecision verdict = settled.get();
         Object raw = ctx.getExtra().get(ToolInterruptionState.RAIL_SETTLED_DECISIONS_KEY);
         if (raw instanceof Map<?, ?> existing) {
             ((Map<String, Map<String, RailSettledDecision>>) existing)
                     .computeIfAbsent(toolCallId, key -> new ConcurrentHashMap<>())
-                    .put(settled.getRailId(), settled);
+                    .put(verdict.getRailId(), verdict);
         } else {
             Map<String, Map<String, RailSettledDecision>> byToolCallId = new ConcurrentHashMap<>();
             byToolCallId.computeIfAbsent(toolCallId, key -> new ConcurrentHashMap<>())
-                    .put(settled.getRailId(), settled);
+                    .put(verdict.getRailId(), verdict);
             ctx.getExtra().put(ToolInterruptionState.RAIL_SETTLED_DECISIONS_KEY, byToolCallId);
         }
     }
 
     /**
-     * Convert a rail decision into a persistable settled verdict; interrupt decisions yield null.
+     * Convert a rail decision into a persistable settled verdict; interrupt decisions yield empty.
      * 
      * @param railId railId
      * @param decision decision
-     * @return the persistable verdict, or null when the decision is not final
+     * @return the persistable verdict, or empty when the decision is not final
      * @since 0.1.16
      */
-    private static RailSettledDecision toSettledDecision(String railId, InterruptDecision decision) {
+    private static Optional<RailSettledDecision> toSettledDecision(String railId, InterruptDecision decision) {
         if (decision instanceof ApproveResult) {
             ApproveResult approveResult = (ApproveResult) decision;
-            return RailSettledDecision.builder().railId(railId).type(RailSettledDecision.TYPE_APPROVE)
-                    .newArgs(approveResult.getNewArgs()).build();
+            return Optional.of(RailSettledDecision.builder().railId(railId).type(RailSettledDecision.TYPE_APPROVE)
+                    .newArgs(approveResult.getNewArgs()).build());
         }
         if (decision instanceof RejectResult) {
             RejectResult rejectResult = (RejectResult) decision;
             Object toolResult = rejectResult.getToolResult();
-            return RailSettledDecision.builder().railId(railId).type(RailSettledDecision.TYPE_REJECT)
+            return Optional.of(RailSettledDecision.builder().railId(railId).type(RailSettledDecision.TYPE_REJECT)
                     .toolResult(toolResult != null ? String.valueOf(toolResult) : null)
-                    .toolMessage(rejectResult.getToolMessage()).build();
+                    .toolMessage(rejectResult.getToolMessage()).build());
         }
-        return null;
+        return Optional.empty();
     }
 
     /**
