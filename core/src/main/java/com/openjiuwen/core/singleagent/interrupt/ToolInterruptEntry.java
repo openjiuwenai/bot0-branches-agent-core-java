@@ -13,6 +13,8 @@ import lombok.NoArgsConstructor;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Persisted interrupted tool entry for resume support.
@@ -28,4 +30,13 @@ public class ToolInterruptEntry implements Serializable {
     private static final long serialVersionUID = 1L;
     private ToolCall toolCall;
     private InterruptRequest request;
+
+    /**
+     * Final verdicts rails already issued for {@link #toolCall} during earlier replays, re-applied
+     * on later replays without consulting those rails again.
+     * 
+     * @since 0.1.16
+     */
+    @Builder.Default
+    private List<RailSettledDecision> settledDecisions = new ArrayList<>();
 }

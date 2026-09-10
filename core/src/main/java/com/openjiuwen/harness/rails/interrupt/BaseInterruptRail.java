@@ -8,6 +8,7 @@ import com.openjiuwen.core.foundation.llm.schema.ToolCall;
 import com.openjiuwen.core.foundation.llm.schema.ToolMessage;
 import com.openjiuwen.core.session.interaction.InteractiveInput;
 import com.openjiuwen.core.singleagent.interrupt.InterruptRequest;
+import com.openjiuwen.core.singleagent.interrupt.RailSettledDecision;
 import com.openjiuwen.core.singleagent.interrupt.ToolInterruptException;
 import com.openjiuwen.core.singleagent.interrupt.ToolInterruptionState;
 import com.openjiuwen.core.singleagent.rail.AgentCallbackContext;
@@ -16,7 +17,9 @@ import com.openjiuwen.core.singleagent.rail.ToolCallInputs;
 
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Harness-level base rail for interrupt and resume handling.
@@ -163,12 +166,141 @@ public abstract class BaseInterruptRail extends AgentRail {
         if (!toolNames.contains(toolName)) {
             return;
         }
+        evaluateWithSettledReplay(ctx, inputs);
+    }
 
+    /**
+     * Shared before-tool-call flow with settled-decision replay support. If this rail already
+     * issued a final verdict (approve or reject) for the current tool call during an earlier
+     * replay round, the persisted verdict is re-applied without consulting the rail again.
+     * Otherwise the rail is consulted through {@link #resolveInterrupt} and a final verdict is
+     * recorded for later replays.
+     * 
+     * @param ctx ctx
+     * @param inputs inputs
+     * @since 0.1.16
+     */
+    protected void evaluateWithSettledReplay(AgentCallbackContext ctx, ToolCallInputs inputs) {
         ToolCall toolCall = inputs.getToolCall();
         String toolCallId = toolCall != null ? toolCall.getId() : "";
+
+        Optional<RailSettledDecision> settled = findSettledDecision(ctx, toolCallId);
+        if (settled.isPresent()) {
+            applyDecision(ctx, toolCall, toDecision(settled.get()));
+            return;
+        }
+
         Object userInput = getUserInput(ctx, toolCallId);
         InterruptDecision decision = resolveInterrupt(ctx, toolCall, userInput);
+        recordSettledDecision(ctx, toolCallId, decision);
         applyDecision(ctx, toolCall, decision);
+    }
+
+    /**
+     * Return the stable identity used to persist and replay this rail's settled decisions.
+     * Defaults to the concrete class name; override it when multiple instances of the same rail
+     * class are registered on one agent.
+     * 
+     * @return stable identity of this rail
+     * @since 0.1.16
+     */
+    protected String railId() {
+        return getClass().getName();
+    }
+
+    /**
+     * Find the verdict this rail already issued for the given tool call during an earlier
+     * replay round.
+     * 
+     * @param ctx ctx
+     * @param toolCallId toolCallId
+     * @return the persisted verdict, or empty when this rail has not settled the tool call yet
+     * @since 0.1.16
+     */
+    @SuppressWarnings("unchecked")
+    private Optional<RailSettledDecision> findSettledDecision(AgentCallbackContext ctx, String toolCallId) {
+        if (ctx.getExtra() == null || toolCallId == null) {
+            return Optional.empty();
+        }
+        Object raw = ctx.getExtra().get(ToolInterruptionState.RAIL_SETTLED_DECISIONS_KEY);
+        if (!(raw instanceof Map<?, ?> byToolCallId)) {
+            return Optional.empty();
+        }
+        Object perRail = byToolCallId.get(toolCallId);
+        if (!(perRail instanceof Map<?, ?> byRailId)) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(byRailId.get(railId()))
+                .filter(RailSettledDecision.class::isInstance)
+                .map(RailSettledDecision.class::cast);
+    }
+
+    /**
+     * Record a final verdict (approve or reject) issued by this rail for the given tool call so
+     * that later replays re-apply it without consulting this rail again. Interrupt decisions are
+     * not final and are not recorded.
+     * 
+     * @param ctx ctx
+     * @param toolCallId toolCallId
+     * @param decision decision
+     * @since 0.1.16
+     */
+    @SuppressWarnings("unchecked")
+    private void recordSettledDecision(AgentCallbackContext ctx, String toolCallId, InterruptDecision decision) {
+        Optional<RailSettledDecision> settled = toSettledDecision(railId(), decision);
+        if (settled.isEmpty() || ctx.getExtra() == null) {
+            return;
+        }
+        RailSettledDecision verdict = settled.get();
+        Object raw = ctx.getExtra().get(ToolInterruptionState.RAIL_SETTLED_DECISIONS_KEY);
+        if (raw instanceof Map<?, ?> existing) {
+            ((Map<String, Map<String, RailSettledDecision>>) existing)
+                    .computeIfAbsent(toolCallId, key -> new ConcurrentHashMap<>())
+                    .put(verdict.getRailId(), verdict);
+        } else {
+            Map<String, Map<String, RailSettledDecision>> byToolCallId = new ConcurrentHashMap<>();
+            byToolCallId.computeIfAbsent(toolCallId, key -> new ConcurrentHashMap<>())
+                    .put(verdict.getRailId(), verdict);
+            ctx.getExtra().put(ToolInterruptionState.RAIL_SETTLED_DECISIONS_KEY, byToolCallId);
+        }
+    }
+
+    /**
+     * Convert a rail decision into a persistable settled verdict; interrupt decisions yield empty.
+     * 
+     * @param railId railId
+     * @param decision decision
+     * @return the persistable verdict, or empty when the decision is not final
+     * @since 0.1.16
+     */
+    private static Optional<RailSettledDecision> toSettledDecision(String railId, InterruptDecision decision) {
+        if (decision instanceof ApproveResult) {
+            ApproveResult approveResult = (ApproveResult) decision;
+            return Optional.of(RailSettledDecision.builder().railId(railId).type(RailSettledDecision.TYPE_APPROVE)
+                    .newArgs(approveResult.getNewArgs()).build());
+        }
+        if (decision instanceof RejectResult) {
+            RejectResult rejectResult = (RejectResult) decision;
+            Object toolResult = rejectResult.getToolResult();
+            return Optional.of(RailSettledDecision.builder().railId(railId).type(RailSettledDecision.TYPE_REJECT)
+                    .toolResult(toolResult != null ? String.valueOf(toolResult) : null)
+                    .toolMessage(rejectResult.getToolMessage()).build());
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Rebuild the rail decision from a persisted settled verdict.
+     * 
+     * @param settled settled
+     * @return the rebuilt decision
+     * @since 0.1.16
+     */
+    private static InterruptDecision toDecision(RailSettledDecision settled) {
+        if (RailSettledDecision.TYPE_APPROVE.equals(settled.getType())) {
+            return new ApproveResult(settled.getNewArgs());
+        }
+        return new RejectResult(settled.getToolResult(), settled.getToolMessage());
     }
 
     /**

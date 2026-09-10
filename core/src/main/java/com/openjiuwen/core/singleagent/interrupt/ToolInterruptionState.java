@@ -41,6 +41,13 @@ public class ToolInterruptionState implements Serializable {
      */
     public static final String RESUME_USER_INPUT_KEY = "_resume_user_input";
 
+    /**
+     * RAIL_SETTLED_DECISIONS_KEY.
+     * 
+     * @since 0.1.16
+     */
+    public static final String RAIL_SETTLED_DECISIONS_KEY = "_rail_settled_decisions";
+
     private int iteration;
 
     @Builder.Default

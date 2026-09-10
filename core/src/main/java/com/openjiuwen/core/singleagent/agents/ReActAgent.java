@@ -35,6 +35,7 @@ import com.openjiuwen.core.session.stream.StreamMode;
 import com.openjiuwen.core.singleagent.AbilityManager.ToolExecutionEntry;
 import com.openjiuwen.core.singleagent.BaseAgent;
 import com.openjiuwen.core.singleagent.interrupt.InterruptRequest;
+import com.openjiuwen.core.singleagent.interrupt.RailSettledDecision;
 import com.openjiuwen.core.singleagent.interrupt.ToolCallInterruptRequest;
 import com.openjiuwen.core.singleagent.interrupt.ToolInterruptEntry;
 import com.openjiuwen.core.singleagent.interrupt.ToolInterruptException;
@@ -57,6 +58,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
@@ -83,6 +85,7 @@ import java.util.concurrent.RejectedExecutionException;
 public class ReActAgent extends BaseAgent {
     private static final String INTERRUPTION_KEY = ToolInterruptionState.INTERRUPTION_KEY;
     private static final String RESUME_USER_INPUT_KEY = ToolInterruptionState.RESUME_USER_INPUT_KEY;
+    private static final String RAIL_SETTLED_DECISIONS_KEY = ToolInterruptionState.RAIL_SETTLED_DECISIONS_KEY;
     private static final String IDENTITY_SECTION = "identity";
     private static final String SKILLS_SECTION = "skills";
     private static final int IDENTITY_SECTION_PRIORITY = 10;
@@ -925,13 +928,16 @@ public class ReActAgent extends BaseAgent {
                 }
 
                 ctx.getExtra().put(RESUME_USER_INPUT_KEY, resumePayload.get());
+                List<ToolCall> pendingToolCalls = toInterruptedToolCalls(interruptionState);
+                ctx.getExtra().put(RAIL_SETTLED_DECISIONS_KEY, buildSettledDecisionMap(interruptionState));
                 List<ToolExecutionEntry> resumedResults =
-                    executeToolCallEntries(ctx, toInterruptedToolCalls(interruptionState), session, context);
+                    executeToolCallEntries(ctx, pendingToolCalls, session, context);
                 ctx.getExtra().remove(RESUME_USER_INPUT_KEY);
 
                 ToolInterruptionState resumedState =
-                    collectToolInterrupts(resumedResults, toInterruptedToolCalls(interruptionState),
+                    collectToolInterrupts(ctx, resumedResults, pendingToolCalls,
                             interruptionState.getIteration(), interruptionState.getOriginalQuery());
+                ctx.getExtra().remove(RAIL_SETTLED_DECISIONS_KEY);
                 if (resumedState != null) {
                     contextEngine.saveContexts(session, null);
                     Map<String, Object> interruptResult = commitInterrupt(session, resumedState);
@@ -984,7 +990,7 @@ public class ReActAgent extends BaseAgent {
                         return finishAfterTool.getResult();
                     }
 
-                    ToolInterruptionState toolInterruptionState = collectToolInterrupts(results,
+                    ToolInterruptionState toolInterruptionState = collectToolInterrupts(ctx, results,
                             castToolCalls(aiMessage.getToolCalls()), iteration, invokeInputs.getQuery());
                     if (toolInterruptionState != null) {
                         contextEngine.saveContexts(session, null);
@@ -1216,6 +1222,7 @@ public class ReActAgent extends BaseAgent {
     /**
      * collectToolInterrupts.
      * 
+     * @param ctx ctx
      * @param results results
      * @param toolCalls toolCalls
      * @param iteration iteration
@@ -1223,8 +1230,8 @@ public class ReActAgent extends BaseAgent {
      * @return the result
      * @since 0.1.7
      */
-    private ToolInterruptionState collectToolInterrupts(List<ToolExecutionEntry> results, List<ToolCall> toolCalls,
-            int iteration, String originalQuery) {
+    private ToolInterruptionState collectToolInterrupts(AgentCallbackContext ctx, List<ToolExecutionEntry> results,
+            List<ToolCall> toolCalls, int iteration, String originalQuery) {
         ToolInterruptionState interruptionState = null;
         if (results == null || results.isEmpty()) {
             return interruptionState;
@@ -1234,9 +1241,11 @@ public class ReActAgent extends BaseAgent {
             Object toolResult = results.get(i).result();
             if (toolResult instanceof ToolInterruptException) {
                 ToolInterruptException interruptException = (ToolInterruptException) toolResult;
-                interruptedTools.add(ToolInterruptEntry.builder().toolCall(
-                        interruptException.getToolCall() != null ? interruptException.getToolCall() : toolCalls.get(i))
-                        .request(interruptException.getRequest()).build());
+                ToolCall interruptedCall =
+                        interruptException.getToolCall() != null ? interruptException.getToolCall() : toolCalls.get(i);
+                interruptedTools.add(ToolInterruptEntry.builder().toolCall(interruptedCall)
+                        .request(interruptException.getRequest())
+                        .settledDecisions(extractSettledDecisions(ctx, interruptedCall.getId())).build());
             }
         }
         if (interruptedTools.isEmpty()) {
@@ -1245,6 +1254,65 @@ public class ReActAgent extends BaseAgent {
         interruptionState = ToolInterruptionState.builder().iteration(iteration).interruptedTools(interruptedTools)
                 .originalQuery(originalQuery).build();
         return interruptionState;
+    }
+
+    /**
+     * Expand the persisted rail settled decisions of an interruption state into a map keyed by
+     * tool call id and rail id, to be consumed by rails during interrupt replay.
+     * 
+     * @param state state
+     * @return the expanded settled decision map
+     * @since 0.1.16
+     */
+    private static Map<String, Map<String, RailSettledDecision>> buildSettledDecisionMap(ToolInterruptionState state) {
+        Map<String, Map<String, RailSettledDecision>> byToolCallId = new ConcurrentHashMap<>();
+        if (state == null || state.getInterruptedTools() == null) {
+            return byToolCallId;
+        }
+        for (ToolInterruptEntry entry : state.getInterruptedTools()) {
+            if (entry == null || entry.getToolCall() == null
+                    || entry.getSettledDecisions() == null || entry.getSettledDecisions().isEmpty()) {
+                continue;
+            }
+            Map<String, RailSettledDecision> byRailId = byToolCallId
+                    .computeIfAbsent(entry.getToolCall().getId(), key -> new ConcurrentHashMap<>());
+            for (RailSettledDecision decision : entry.getSettledDecisions()) {
+                if (decision != null && decision.getRailId() != null) {
+                    byRailId.put(decision.getRailId(), decision);
+                }
+            }
+        }
+        return byToolCallId;
+    }
+
+    /**
+     * extractSettledDecisions.
+     * 
+     * @param ctx ctx
+     * @param toolCallId toolCallId
+     * @return the settled decisions recorded for the tool call, possibly empty
+     * @since 0.1.16
+     */
+    @SuppressWarnings("unchecked")
+    private static List<RailSettledDecision> extractSettledDecisions(AgentCallbackContext ctx, String toolCallId) {
+        List<RailSettledDecision> decisions = new ArrayList<RailSettledDecision>();
+        if (ctx == null || ctx.getExtra() == null || toolCallId == null) {
+            return decisions;
+        }
+        Object raw = ctx.getExtra().get(RAIL_SETTLED_DECISIONS_KEY);
+        if (!(raw instanceof Map<?, ?> byToolCallId)) {
+            return decisions;
+        }
+        Object perRail = byToolCallId.get(toolCallId);
+        if (!(perRail instanceof Map<?, ?> byRailId)) {
+            return decisions;
+        }
+        for (Object value : ((Map<String, RailSettledDecision>) byRailId).values()) {
+            if (value instanceof RailSettledDecision settled) {
+                decisions.add(settled);
+            }
+        }
+        return decisions;
     }
 
     /**
@@ -1494,13 +1562,16 @@ public class ReActAgent extends BaseAgent {
                 }
 
                 ctx.getExtra().put(RESUME_USER_INPUT_KEY, resumePayload.get());
+                List<ToolCall> pendingToolCalls = toInterruptedToolCalls(interruptionState);
+                ctx.getExtra().put(RAIL_SETTLED_DECISIONS_KEY, buildSettledDecisionMap(interruptionState));
                 List<ToolExecutionEntry> resumedResults =
-                    executeToolCallEntries(ctx, toInterruptedToolCalls(interruptionState), session, context);
+                    executeToolCallEntries(ctx, pendingToolCalls, session, context);
                 ctx.getExtra().remove(RESUME_USER_INPUT_KEY);
 
                 ToolInterruptionState resumedState =
-                    collectToolInterrupts(resumedResults, toInterruptedToolCalls(interruptionState),
+                    collectToolInterrupts(ctx, resumedResults, pendingToolCalls,
                             interruptionState.getIteration(), interruptionState.getOriginalQuery());
+                ctx.getExtra().remove(RAIL_SETTLED_DECISIONS_KEY);
                 if (resumedState != null) {
                     contextEngine.saveContexts(session, null);
                     Map<String, Object> interruptResult = commitInterrupt(session, resumedState);
@@ -1560,7 +1631,7 @@ public class ReActAgent extends BaseAgent {
                         return finishAfterTool.getResult();
                     }
 
-                    ToolInterruptionState toolInterruptionState = collectToolInterrupts(results,
+                    ToolInterruptionState toolInterruptionState = collectToolInterrupts(ctx, results,
                             castToolCalls(aiMessage.getToolCalls()), iteration, invokeInputs.getQuery());
                     if (toolInterruptionState != null) {
                         contextEngine.saveContexts(session, null);
