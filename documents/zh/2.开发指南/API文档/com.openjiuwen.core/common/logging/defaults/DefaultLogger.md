@@ -47,6 +47,8 @@ public class DefaultLogger implements LoggerProtocol
 
 ## 说明
 
-- 文本日志输出前会把 `trace_id` 和 `log_type` 写入 MDC；控制字符会被 `sanitize()` 转义为 `\n`、`\t`、`\xNN` 等安全文本。
+- 结构化日志分别使用 `session_id` 和 `trace_id`。事件显式传入的值优先，否则分别从当前会话和有效的 OpenTelemetry Span 上下文补齐；缺失字段不输出。
+- 文本日志的 MDC `trace_id` 仅在当前 OpenTelemetry Span 上下文有效时写入。需要按会话聚合的消费者可读取结构化日志中的 `session_id`。
+- 控制字符会由 `sanitize()` 转义。
 - `addHandler/removeHandler/addFilter/removeFilter/logger()` 都只作用于 JUL 后端；SLF4J 后端主要负责常规文本输出。
 - `logEvent()` 在 `event == null && eventType == null` 时退化为 `info(msg)`；仅传入 `eventType` 时会自动创建事件对象、补齐 `traceId/moduleId/moduleName`，并在 JSON 序列化失败时回退到 `event.toMap().toString()`。

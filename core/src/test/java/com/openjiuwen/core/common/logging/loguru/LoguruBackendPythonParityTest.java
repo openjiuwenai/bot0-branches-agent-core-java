@@ -169,7 +169,7 @@ class LoguruBackendPythonParityTest {
     private void structuredEventTypeUsesNativeLoguruJsonEnvelope() throws Exception {
         LoguruLogger logger = configuredLoguruLogger("common", tempDirectory());
         CapturingHandler handler = attach(logger);
-        LoggingUtils.setSessionId("TRACE-JSON");
+        LoggingUtils.setSessionId("SESSION-JSON");
 
         logger.logEvent("Agent started", LogEventType.AGENT_START, null);
 
@@ -178,7 +178,8 @@ class LoguruBackendPythonParityTest {
         assertEquals("common", payload.get("module_id").asText());
         assertEquals("common", payload.get("module_name").asText());
         assertEquals("Agent started", payload.get("message").asText());
-        assertEquals("TRACE-JSON", payload.get("trace_id").asText());
+        assertEquals("SESSION-JSON", payload.get("session_id").asText());
+        assertFalse(payload.has("trace_id"));
         assertEquals("common", payload.at("/metadata/_log_context/log_type").asText());
     }
 
@@ -191,19 +192,20 @@ class LoguruBackendPythonParityTest {
         event.setModuleId("agent_123");
         event.setMessage("Original event message");
 
-        LoggingUtils.setSessionId("TRACE-EVENT");
+        LoggingUtils.setSessionId("SESSION-EVENT");
         logger.logEvent("Replacement message", null, event);
 
         JsonNode payload = jsonFromLast(handler);
         assertEquals("Replacement message", payload.get("message").asText());
         assertEquals("agent_123", payload.get("module_id").asText());
-        assertEquals("TRACE-EVENT", payload.get("trace_id").asText());
+        assertEquals("SESSION-EVENT", payload.get("session_id").asText());
+        assertFalse(payload.has("trace_id"));
     }
 
     private void eventTypeCanEmitEventFirstJsonPayload() throws Exception {
         LoguruLogger logger = configuredLoguruLogger("common", tempDirectory());
         CapturingHandler handler = attach(logger);
-        LoggingUtils.setSessionId("TRACE-EVENT-FIRST");
+        LoggingUtils.setSessionId("SESSION-EVENT-FIRST");
 
         logger.logEvent("Agent started", LogEventType.AGENT_START, null);
 
@@ -213,7 +215,8 @@ class LoguruBackendPythonParityTest {
         assertEquals("agent_start", payload.get("event_type").asText());
         assertEquals("common", payload.get("module_id").asText());
         assertEquals("agent", payload.get("module_type").asText());
-        assertEquals("TRACE-EVENT-FIRST", payload.get("trace_id").asText());
+        assertEquals("SESSION-EVENT-FIRST", payload.get("session_id").asText());
+        assertFalse(payload.has("trace_id"));
         assertEquals("common", payload.at("/metadata/_log_context/log_type").asText());
     }
 
@@ -242,7 +245,7 @@ class LoguruBackendPythonParityTest {
         CapturingHandler handler = attach(logger);
         BaseLogEvent event = plainLogEvent("plain log");
 
-        LoggingUtils.setSessionId("TRACE-PLAIN");
+        LoggingUtils.setSessionId("SESSION-PLAIN");
         logger.logEvent("plain log", null, event);
 
         JsonNode payload = jsonFromLast(handler);
@@ -252,7 +255,8 @@ class LoguruBackendPythonParityTest {
         assertEquals("common", payload.get("module_id").asText());
         assertEquals("common", payload.get("module_name").asText());
         assertEquals("system", payload.get("module_type").asText());
-        assertEquals("TRACE-PLAIN", payload.get("trace_id").asText());
+        assertEquals("SESSION-PLAIN", payload.get("session_id").asText());
+        assertFalse(payload.has("trace_id"));
     }
 
     private void exceptionCanEmitEventFirstJsonFailurePayload() throws Exception {

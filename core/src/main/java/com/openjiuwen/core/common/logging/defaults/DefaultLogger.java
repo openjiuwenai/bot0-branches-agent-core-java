@@ -13,6 +13,8 @@ import com.openjiuwen.core.common.logging.events.BaseLogEvent;
 import com.openjiuwen.core.common.logging.events.EventClassRegistry;
 import com.openjiuwen.core.common.logging.events.LogEventType;
 import com.openjiuwen.core.common.logging.events.LogLevel;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -39,7 +41,7 @@ import java.util.logging.LogRecord;
  * <ul>
  *   <li>Console and file output through the active SLF4J provider</li>
  *   <li>Structured event logging via JSON serialization</li>
- *   <li>MDC-based context injection (trace_id, log_type)</li>
+ *   <li>Session and trace correlation in structured events, with the active trace ID in MDC</li>
  *   <li>Control character sanitization</li>
  * </ul>
  */
@@ -246,16 +248,8 @@ public class DefaultLogger implements LoggerProtocol {
         BaseLogEvent eventObj = event;
         if (eventObj == null) {
             eventObj = EventClassRegistry.createEvent(eventType);
-            eventObj.setMessage(sanitize(msg));
-            String traceId = LoggingUtils.getSessionId();
-            if (!"default_trace_id".equals(traceId)) {
-                eventObj.setTraceId(traceId);
-            }
-            eventObj.setModuleId(logType);
-            eventObj.setModuleName(logType);
-        } else {
-            eventObj.setMessage(sanitize(msg));
         }
+        eventObj.setMessage(sanitize(msg));
         enrichEventContext(eventObj);
 
         String json;
@@ -289,9 +283,11 @@ public class DefaultLogger implements LoggerProtocol {
     }
 
     private void enrichEventContext(BaseLogEvent eventObj) {
-        String traceId = LoggingUtils.getSessionId();
-        if (!"default_trace_id".equals(traceId) && eventObj.getTraceId() == null) {
-            eventObj.setTraceId(traceId);
+        if (eventObj.getSessionId() == null) {
+            eventObj.setSessionId(currentSessionId());
+        }
+        if (eventObj.getTraceId() == null) {
+            eventObj.setTraceId(currentTraceId());
         }
         if (eventObj.getModuleId() == null) {
             eventObj.setModuleId(logType);
@@ -305,13 +301,19 @@ public class DefaultLogger implements LoggerProtocol {
             : new LinkedHashMap<>(eventObj.getMetadata());
         Map<String, Object> logContext = new LinkedHashMap<>();
         logContext.put("log_type", logType);
-        logContext.put("trace_id", traceId);
+        logContext.put("session_id", eventObj.getSessionId());
+        logContext.put("trace_id", eventObj.getTraceId());
         metadata.put("_log_context", logContext);
         eventObj.setMetadata(metadata);
     }
 
     private void setMdc() {
-        MDC.put("trace_id", LoggingUtils.getSessionId());
+        String traceId = currentTraceId();
+        if (traceId == null) {
+            MDC.remove("trace_id");
+        } else {
+            MDC.put("trace_id", traceId);
+        }
         MDC.put("member_id", LoggingUtils.getMemberId());
         MDC.put("log_type", logType);
     }
@@ -320,6 +322,19 @@ public class DefaultLogger implements LoggerProtocol {
         MDC.remove("trace_id");
         MDC.remove("member_id");
         MDC.remove("log_type");
+    }
+
+    private static String currentSessionId() {
+        String sessionId = LoggingUtils.getSessionId();
+        if (sessionId.isBlank() || "default_trace_id".equals(sessionId)) {
+            return null;
+        }
+        return sessionId;
+    }
+
+    private static String currentTraceId() {
+        SpanContext context = Span.current().getSpanContext();
+        return context.isValid() ? context.getTraceId() : null;
     }
 
     private void publishToJul(Level level, String msg, Throwable throwable, Object... args) {
