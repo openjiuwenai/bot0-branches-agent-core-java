@@ -73,12 +73,7 @@ public class DefaultLogger implements LoggerProtocol {
             return;
         }
         if (slf4jLogger.isDebugEnabled()) {
-            setMdc();
-            try {
-                slf4jLogger.debug(sanitize(msg), args);
-            } finally {
-                clearMdc();
-            }
+            withMdc(() -> slf4jLogger.debug(sanitize(msg), args));
         }
         publishToJul(Level.FINE, msg, null, args);
     }
@@ -89,12 +84,7 @@ public class DefaultLogger implements LoggerProtocol {
             return;
         }
         if (slf4jLogger.isInfoEnabled()) {
-            setMdc();
-            try {
-                slf4jLogger.info(sanitize(msg), args);
-            } finally {
-                clearMdc();
-            }
+            withMdc(() -> slf4jLogger.info(sanitize(msg), args));
         }
         publishToJul(Level.INFO, msg, null, args);
     }
@@ -105,12 +95,7 @@ public class DefaultLogger implements LoggerProtocol {
             return;
         }
         if (slf4jLogger.isWarnEnabled()) {
-            setMdc();
-            try {
-                slf4jLogger.warn(sanitize(msg), args);
-            } finally {
-                clearMdc();
-            }
+            withMdc(() -> slf4jLogger.warn(sanitize(msg), args));
         }
         publishToJul(Level.WARNING, msg, null, args);
     }
@@ -121,12 +106,7 @@ public class DefaultLogger implements LoggerProtocol {
             return;
         }
         if (slf4jLogger.isErrorEnabled()) {
-            setMdc();
-            try {
-                slf4jLogger.error(sanitize(msg), args);
-            } finally {
-                clearMdc();
-            }
+            withMdc(() -> slf4jLogger.error(sanitize(msg), args));
         }
         publishToJul(Level.SEVERE, msg, null, args);
     }
@@ -138,12 +118,7 @@ public class DefaultLogger implements LoggerProtocol {
         }
         // SLF4J has no CRITICAL level; use ERROR
         if (slf4jLogger.isErrorEnabled()) {
-            setMdc();
-            try {
-                slf4jLogger.error("[CRITICAL] " + sanitize(msg), args);
-            } finally {
-                clearMdc();
-            }
+            withMdc(() -> slf4jLogger.error("[CRITICAL] " + sanitize(msg), args));
         }
         publishToJul(Level.SEVERE, "[CRITICAL] " + msg, null, args);
     }
@@ -154,12 +129,7 @@ public class DefaultLogger implements LoggerProtocol {
             return;
         }
         if (slf4jLogger.isErrorEnabled()) {
-            setMdc();
-            try {
-                slf4jLogger.error(sanitize(msg), t);
-            } finally {
-                clearMdc();
-            }
+            withMdc(() -> slf4jLogger.error(sanitize(msg), t));
         }
         publishToJul(Level.SEVERE, msg, t, args);
     }
@@ -308,6 +278,20 @@ public class DefaultLogger implements LoggerProtocol {
         logContext.put("trace_id", traceId);
         metadata.put("_log_context", logContext);
         eventObj.setMetadata(metadata);
+    }
+
+    private void withMdc(Runnable logAction) {
+        Map<String, String> previousContext = MDC.getCopyOfContextMap();
+        try {
+            setMdc();
+            logAction.run();
+        } finally {
+            if (previousContext == null) {
+                clearMdc();
+            } else {
+                MDC.setContextMap(previousContext);
+            }
+        }
     }
 
     private void setMdc() {
